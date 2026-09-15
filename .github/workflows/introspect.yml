@@ -1,0 +1,67 @@
+name: probe-runner-context
+on: workflow_dispatch
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: Session and process context
+        shell: pwsh
+        run: |
+          Write-Host "=== Current process ==="
+          $me = [System.Diagnostics.Process]::GetCurrentProcess()
+          Write-Host "PID: $($me.Id)  SessionId: $($me.SessionId)"
+          whoami /all
+
+          Write-Host "`n=== Parent process chain ==="
+          $pid_ = $me.Id
+          for ($i = 0; $i -lt 10; $i++) {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$pid_"
+            if (-not $proc) { break }
+            Write-Host "$($proc.ProcessId) $($proc.Name) (parent: $($proc.ParentProcessId))"
+            $pid_ = $proc.ParentProcessId
+            if ($pid_ -eq 0 -or $pid_ -eq 4) { break }
+          }
+
+          Write-Host "`n=== Active console session vs our session ==="
+          Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class W {
+    [DllImport("kernel32.dll")]
+    public static extern int WTSGetActiveConsoleSessionId();
+}
+"@
+          $activeConsole = [W]::WTSGetActiveConsoleSessionId()
+          Write-Host "Active console session: $activeConsole  |  our session: $($me.SessionId)"
+
+          Write-Host "`n=== query session (all logon sessions) ==="
+          query session
+
+          Write-Host "`n=== explorer.exe presence (признак полноценного desktop) ==="
+          Get-Process explorer -ErrorAction SilentlyContinue | Select-Object Id, SessionId
+
+          Write-Host "`n=== Winlogon / autologon settings ==="
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' |
+            Select-Object AutoAdminLogon, DefaultUserName
+
+          Write-Host "`n=== UAC state ==="
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name EnableLUA
+
+          Write-Host "`n=== Runner-related services ==="
+          Get-Service | Where-Object { $_.Name -like "*actions*" -or $_.DisplayName -like "*runner*" }
+
+          Write-Host "`n=== SESSIONNAME env var ==="
+          $env:SESSIONNAME
+
+          Write-Host "`n=== Window station / desktop access test ==="
+          Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class D {
+    [DllImport("user32.dll")] public static extern IntPtr GetProcessWindowStation();
+    [DllImport("user32.dll")] public static extern bool GetUserObjectInformation(IntPtr h, int idx, byte[] buf, int len, ref int needed);
+}
+"@
+          $ws = [D]::GetProcessWindowStation()
+          Write-Host "Window station handle: $ws"
